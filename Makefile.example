@@ -1,15 +1,22 @@
-BIN=cloudtrail-tattletail
-FUNCTION_NAME=$(BIN)
+BIN=bootstrap
+FUNCTION_NAME_S3=cloudtrail-tattletail
+FUNCTION_NAME_CWLOGS=cloudtrail-tattletail-cwlogs
+FUNCTION_NAME_S3_SRC=cloudtrail_tattletail.go cloudtrail_tattletail_test.go
+FUNCTION_NAME_CWLOGS_SRC=cloudtrail_tattletail_cwlogs.go
 CONF_S3_BUCKET=
 CONF_S3_PATH=
 
-$(BIN): $(wildcard *.go) $(wildcard **/*.go)
-	go test .
-	go build -o $(BIN)
+$(FUNCTION_NAME_S3): $(FUNCTION_NAME_S3_SRC) $(wildcard **/*.go)
+	rm -f $(BIN) $@.zip
+	go test $(FUNCTION_NAME_S3_SRC)
+	go build -o $(BIN) $(FUNCTION_NAME_S3_SRC)
+	zip -r $@.zip $(BIN) $(wildcard ./tattletail.toml)
 
-$(BIN).zip: $(BIN) $(wildcard ./tattletail.toml)
-	rm -f $@
-	zip -r $@ $^
+$(FUNCTION_NAME_CWLOGS): $(FUNCTION_NAME_CWLOGS_SRC) $(wildcard **/*.go)
+	rm -f $(BIN) $@.zip
+	go test $(FUNCTION_NAME_CWLOGS_SRC)
+	go build -o $(BIN) $(FUNCTION_NAME_CWLOGS_SRC)
+	zip -r $@.zip $(BIN) $(wildcard ./tattletail.toml)
 
 .PHONY: upload
 upload: $(BIN).zip
