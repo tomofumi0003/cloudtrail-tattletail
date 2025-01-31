@@ -13,5 +13,5 @@ func main() {
 	handler := log15.StreamHandler(os.Stdout, log15.LogfmtFormat())
 	log15.Root().SetHandler(handler)
 	s := NewServer()
-	lambda.Start(s.HandlerCWLogs)
+	lambda.Start(s.HandlerS3)
 }

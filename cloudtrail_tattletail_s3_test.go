@@ -128,7 +128,7 @@ from_email = "cloudtrail_tattletail@example.com"
 	os.Setenv("S3_CONFIG_PATH", confKey)
 	os.Setenv("AWS_REGION", "us-east-1")
 
-	server := newServer()
+	server := NewServer()
 	evt := events.S3Event{
 		Records: []events.S3EventRecord{
 			{
@@ -150,7 +150,7 @@ from_email = "cloudtrail_tattletail@example.com"
 		sentEmails = sentEmails[:0]
 		webhookPayloads = webhookPayloads[:0]
 
-		err = server.Handler(evt)
+		err = server.HandlerS3(evt)
 		if err != nil {
 			t.Fatal(err)
 		}
