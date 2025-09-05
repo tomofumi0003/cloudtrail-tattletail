@@ -3,13 +3,16 @@ package config
 type Config struct {
 	Rules        []Rule        `toml:"rule"`
 	Destinations []Destination `toml:"destination"`
+	General      General       `toml:"general"`
 }
 
 type Rule struct {
-	Name         string   `toml:"name"`
-	JQMatch      string   `toml:"jq_match"`
-	Destinations []string `toml:"destinations"`
-	Desc         string   `toml:"description"`
+	Name           string   `toml:"name"`
+	JQMatch        string   `toml:"jq_match"`
+	// ResultDataType is a string of "jsonObj" "jsonStr"
+	ResultDataType string   `toml:"result_data_type"`
+	Destinations   []string `toml:"destinations"`
+	Desc           string   `toml:"description"`
 }
 
 type Destination struct {
@@ -27,4 +30,10 @@ type Destination struct {
 	ToEmails []string `toml:"to_emails"`
 	// FromEmail is for type "ses"
 	FromEmail string `toml:"from_email"`
+}
+
+type General struct {
+	TimeZone string   `toml:"timezone"`
+	Keys     []string `toml:"keys"`
+	Version  string   `toml:"version"`
 }

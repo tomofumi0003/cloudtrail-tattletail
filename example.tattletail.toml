@@ -25,3 +25,8 @@ id = "Email"
 type = "ses"
 to_emails = ["foo@example.com", "bar@example.com"]
 from_email = "cloudtrail_alerts@example.com"
+
+[general]
+timezone = "Asia/Tokyo"
+keys = [".eventTime", ".userIdentity.sessionContext.attributes.creationDate"]
+version = "20250906-01"

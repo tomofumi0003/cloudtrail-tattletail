@@ -71,6 +71,11 @@ id = "Email"
 type = "ses"
 to_emails = ["foo@example.com", "bar@example.com"]
 from_email = "cloudtrail_alerts@example.com"
+
+[general]
+timezone = "Asia/Tokyo"
+keys = [".eventTime", ".userIdentity.sessionContext.attributes.creationDate"]
+version = "20250906-01"
 ```
 
 The configuration file can either be bundled directly in lambda function, or it can be uploaded to an S3 bucket and the lambda function will fetch it when it is invoked. Bundling the configuration file directly is simpler but you have to reupload the whole lambda function any time you want to make configuration changes.

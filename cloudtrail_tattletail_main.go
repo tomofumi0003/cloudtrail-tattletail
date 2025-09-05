@@ -8,10 +8,10 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -25,15 +25,9 @@ import (
 	"github.com/psanford/cloudtrail-tattletail/internal/destsns"
 )
 
-func main() {
-	awsstub.InitAWS()
-	handler := log15.StreamHandler(os.Stdout, log15.LogfmtFormat())
-	log15.Root().SetHandler(handler)
-	s := newServer()
-	lambda.Start(s.Handler)
-}
+var version string
 
-func newServer() *server {
+func NewServer() *server {
 	loaders := []destination.Loader{
 		destsns.NewLoader(),
 		destses.NewLoader(),
@@ -53,10 +47,16 @@ type server struct {
 	loaders map[string]destination.Loader
 
 	rules []Rule
+
+	general General
 }
 
-func (s *server) Handler(evt events.S3Event) error {
+func (s *server) HandlerS3(evt events.S3Event) error {
 	lgr := log15.New()
+
+	if version != "" {
+		lgr.Info("cloudtrail_tattletail", "version", version)
+	}
 
 	err := s.loadConfig(lgr)
 	if err != nil {
@@ -64,10 +64,30 @@ func (s *server) Handler(evt events.S3Event) error {
 	}
 
 	for _, rec := range evt.Records {
-		err := s.handleRecord(lgr, rec)
+		err := s.handleRecordS3(lgr, rec)
 		if err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (s *server) HandlerCWLogs(evt events.CloudwatchLogsEvent) error {
+	lgr := log15.New()
+
+	if version != "" {
+		lgr.Info("cloudtrail_tattletail", "version", version)
+	}
+
+	err := s.loadConfig(lgr)
+	if err != nil {
+		return err
+	}
+
+	err = s.handleRecordCWLogs(lgr, evt.AWSLogs)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -113,6 +133,12 @@ func (s *server) loadConfig(lgr log15.Logger) error {
 		return err
 	}
 
+	s.general.timezone = conf.General.TimeZone
+	s.general.keys = conf.General.Keys
+	if conf.General.Version != "" {
+		lgr.Info("rule_version", "version", conf.General.Version)
+	}
+
 	destinations := make(map[string]destination.Destination)
 
 	for _, dest := range conf.Destinations {
@@ -152,7 +178,10 @@ func (s *server) loadConfig(lgr log15.Logger) error {
 			return fmt.Errorf("parse jq_match err for rule name=%q idx=%d query=%q err=%w", rule.Name, i, rule.JQMatch, err)
 		}
 		r.query = q
-
+		r.datatype = "jsonObj"
+		if rule.ResultDataType != "" {
+			r.datatype = rule.ResultDataType
+		}
 		for _, destName := range rule.Destinations {
 			dest := destinations[destName]
 			if dest == nil {
@@ -168,7 +197,7 @@ func (s *server) loadConfig(lgr log15.Logger) error {
 	return nil
 }
 
-func (s *server) handleRecord(lgr log15.Logger, s3rec events.S3EventRecord) error {
+func (s *server) handleRecordS3(lgr log15.Logger, s3rec events.S3EventRecord) error {
 	bucket := s3rec.S3.Bucket.Name
 	file := s3rec.S3.Object.Key
 
@@ -215,17 +244,26 @@ func (s *server) handleRecord(lgr log15.Logger, s3rec events.S3EventRecord) erro
 	var matchCount int
 
 	for _, rec := range doc.Records {
+		rec = s.modifyRecord(lgr, rec)
 		for _, rule := range s.rules {
 			var evtID string
 			idI, ok := rec["eventID"]
 			if ok {
 				evtID, _ = idI.(string)
 			}
-			if match, obj := rule.Match(lgr, rec); match {
+			if match, resultData := rule.Match(lgr, rec); match {
 				matchCount++
 				lgr.Info("rule_matched", "rule_name", rule.name, "evt_id", evtID)
 				for _, dest := range rule.dests {
 					lgr.Info("publish_alert", "dest", dest, "rule_name", rule.name, "evt_id", evtID)
+					obj := resultData
+					if rule.datatype == "jsonStr" {
+						err = json.Unmarshal([]byte(resultData.(string)), &obj)
+						if err != nil {
+							lgr.Info("json_unmarshal_err", "err", err, "result_data", resultData)
+							obj = resultData
+						}
+					}
 					err = dest.Send(rule.name, rule.desc, rec, obj)
 					if err != nil {
 						lgr.Error("publish_alert_err", "err", err, "type", dest.Type(), "rule_name", rule.name, "evt_id", evtID)
@@ -240,12 +278,123 @@ func (s *server) handleRecord(lgr log15.Logger, s3rec events.S3EventRecord) erro
 	return nil
 }
 
+func (s *server) handleRecordCWLogs(lgr log15.Logger, rawdata events.CloudwatchLogsRawData) error {
+	data, err := rawdata.Parse()
+	if err != nil {
+		lgr.Error("decode_json_err", "err", err)
+		return err
+	}
+	// lgr.Debug("CloudwatchLogsData", "data", data)
+
+	var matchCount int
+
+	for _, logEvent := range data.LogEvents {
+		lgr.Debug("CloudwatchLogsLogEvent", "message", logEvent.Message)
+
+		var rec map[string]interface{}
+
+		err = json.Unmarshal([]byte(logEvent.Message), &rec)
+		if err != nil {
+			lgr.Error("decode_json_err", "err", err)
+			return err
+		}
+
+		rec = s.modifyRecord(lgr, rec)
+
+		for _, rule := range s.rules {
+			var evtID string
+			idI, ok := rec["eventID"]
+			if ok {
+				evtID, _ = idI.(string)
+			}
+			if match, resultData := rule.Match(lgr, rec); match {
+				matchCount++
+				lgr.Info("rule_matched", "rule_name", rule.name, "evt_id", evtID)
+				for _, dest := range rule.dests {
+					lgr.Info("publish_alert", "dest", dest, "rule_name", rule.name, "evt_id", evtID)
+					obj := resultData
+					if rule.datatype == "jsonStr" {
+						err = json.Unmarshal([]byte(resultData.(string)), &obj)
+						if err != nil {
+							lgr.Info("json_unmarshal_err", "err", err, "result_data", resultData)
+							obj = resultData
+						}
+					}
+					err = dest.Send(rule.name, rule.desc, rec, obj)
+					if err != nil {
+						lgr.Error("publish_alert_err", "err", err, "type", dest.Type(), "rule_name", rule.name, "evt_id", evtID)
+					}
+				}
+			}
+		}
+	}
+
+	lgr.Info("processing_complete", "record_count", len(data.LogEvents), "match_count", matchCount)
+
+	return nil
+}
+
+func (s *server) modifyRecord(lgr log15.Logger, rec map[string]interface{}) map[string]interface{} {
+	// lgr.Info("general_conf", "general", s.general)
+	tz, err := time.LoadLocation("")
+	if s.general.timezone != "" {
+		tz, err = time.LoadLocation(s.general.timezone)
+		if err != nil {
+			lgr.Info("timezone_set_err", "err", err)
+		}
+	}
+
+	for _, key := range s.general.keys {
+		q, err := gojq.Parse(key)
+		if err != nil {
+			lgr.Error("record_parse_err", "err", err)
+			break
+		}
+		iter := q.Run(rec)
+		v, ok := iter.Next()
+		if !ok || v == nil {
+			lgr.Info("rec_no_key", "key", key, "err", ok)
+			break
+		}
+
+		lgr.Info("orgTime", "key", key, "time", v)
+		parsedTime, err := time.Parse(time.RFC3339, v.(string))
+		if err != nil {
+			lgr.Error("time_parse_err", "err", err)
+			break
+		}
+		tzParsedTime := parsedTime.In(tz).Format(time.RFC3339)
+
+		q, err = gojq.Parse(key + " |= \"" + tzParsedTime + "\"")
+		if err != nil {
+			lgr.Error("record_parse_err", "err", err)
+			break
+		}
+		lgr.Info("newTime", "key", key, "time", tzParsedTime, "timezone", tz.String())
+		iter = q.Run(rec)
+		v, ok = iter.Next()
+		if !ok || v == nil {
+			lgr.Info("rec_no_key", "key", key, "err", ok)
+			break
+		}
+		rec = v.(map[string]interface{})
+	}
+
+	return rec
+}
+
 type Rule struct {
 	name      string
 	desc      string
 	query     *gojq.Query
+	datatype  string
 	transform *gojq.Query
 	dests     []destination.Destination
+}
+
+type General struct {
+	timezone  string
+	keys      []string
 }
 
 func (r *Rule) Match(lgr log15.Logger, rec map[string]interface{}) (bool, interface{}) {
